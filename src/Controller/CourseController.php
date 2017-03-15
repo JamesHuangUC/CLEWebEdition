@@ -151,21 +151,31 @@ class CourseController extends AppController
     }
 
 
-
+    public function userinfo() {
+        $this->set('coursenames', TableRegistry::get('course')->find('list'));
+    }
 
 
     public function process() {
-        $myTermLimit = 15;
+        $myTermLimit = intval($this->request->getData('TermLimit'));
+        $mySubset = array_map('intval', $this->request->getData('Subset'));
         $myTermIndex = 0;
+        $termCheck = 0;
         // $hasSummerCourses = false;
         // if($this->summerCoursesExist()) {
         //     $hasSummerCourses = true;
         // }
+        //$rawCourseList = array_keys($this->Course->find('list')->toArray());
+        $nexttermindex = [];
+        //foreach($rawCourseList as $myCourse) {
+        //    $nexttermindex[$myCourse] = 0;
+        //}
 
-        $rawCourseList = $this->Course->find()->contain(['Prerequisites', 'Concurrents', 'Dependents']);
+
+        $rawCourseList = $this->Course->find('all')->where(['id IN' => $mySubset])->contain(['Prerequisites', 'Concurrents', 'Dependents']);
+	//var_dump($rawCourseList);die();
         $myTerms = [];
 
-        $nexttermindex = [];
         foreach($rawCourseList as $myCourse) {
             if($myCourse->units > $myTermLimit) {
                 echo "Process Term Error: Course given that exceeds term limit.";
@@ -177,6 +187,10 @@ class CourseController extends AppController
         while(!$this->hasFullyUsedCourses($rawCourseList, $nexttermindex)) {
             $myCurrentTerm = [];
             $myTermUnits = 0;
+
+            if($termCheck > 3) {
+                $termCheck = 0;
+            }
 
             foreach($rawCourseList as $myCourse) {
                 if($nexttermindex[$myCourse->id] != $myTermIndex) {
@@ -197,19 +211,75 @@ class CourseController extends AppController
                     $myCourse = $this->concurrentHelper($myCourse, $myTermIndex, $myCurrentTerm, $myTermUnits, $myTermLimit, $nexttermindex);
                 }
 
-                if($nexttermindex[$myCourse->id] == $myTermIndex) {
+                if($nexttermindex[$myCourse->id] <= $myTermIndex) {
                     if($myCourse->units + $myTermUnits <= $myTermLimit) {
-                        $myTermUnits += $myCourse->units;
-                        $nexttermindex[$myCourse->id] = -1;
-                        array_push($myCurrentTerm, $myCourse);
+                        if($myCourse->fall == null && $myCourse->winter == null && $myCourse->spring == null && $myCourse->summer == null) {
+                            $myTermUnits += $myCourse->units;
+                            $nexttermindex[$myCourse->id] = -1;
+                            array_push($myCurrentTerm, $myCourse);
 
-                        if(!empty($myCourse->dependents)) {
-                            foreach($myCourse->dependents as $myFutureCourse) {
-                                if($nexttermindex[$myFutureCourse->id] == $myTermIndex) {
-                                    $nexttermindex[$myFutureCourse->id]++;
-                                }
+                            if(!empty($myCourse->dependents)) {
+                                $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
                             }
+
+                        } else {
+                            switch ($termCheck) {
+                                case 0:
+                                    if($myCourse->fall == 1) {
+                                        $myTermUnits += $myCourse->units;
+                                        $nexttermindex[$myCourse->id] = -1;
+                                        array_push($myCurrentTerm, $myCourse);
+
+                                        if(!empty($myCourse->dependents)) {
+                                            $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
+                                        }
+                                    } else {
+                                        $nexttermindex[$myCourse->id]++;
+                                    }
+                                    break;
+                                case 1:
+                                    if($myCourse->winter == 1) {
+                                        $myTermUnits += $myCourse->units;
+                                        $nexttermindex[$myCourse->id] = -1;
+                                        array_push($myCurrentTerm, $myCourse);
+
+                                        if(!empty($myCourse->dependents)) {
+                                            $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
+                                        }
+                                    } else {
+                                        $nexttermindex[$myCourse->id]++;
+                                    }
+                                    break;
+                                case 2:
+                                    if($myCourse->spring == 1) {
+                                        $myTermUnits += $myCourse->units;
+                                        $nexttermindex[$myCourse->id] = -1;
+                                        array_push($myCurrentTerm, $myCourse);
+
+                                        if(!empty($myCourse->dependents)) {
+                                            $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
+                                        }
+                                    } else {
+                                        $nexttermindex[$myCourse->id]++;
+                                    }
+                                    break;
+                                case 3:
+                                    if($myCourse->summer == 1) {
+                                        $myTermUnits += $myCourse->units;
+                                        $nexttermindex[$myCourse->id] = -1;
+                                        array_push($myCurrentTerm, $myCourse);
+
+                                        if(!empty($myCourse->dependents)) {
+                                            $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
+                                        }
+                                    } else {
+                                        $nexttermindex[$myCourse->id]++;
+                                    }
+                                    break;
+                            }
+
                         }
+
                     } else {
                         $nexttermindex[$myCourse->id]++;
                     }
@@ -217,6 +287,7 @@ class CourseController extends AppController
             }
             array_push($myTerms, $myCurrentTerm);
             $myTermIndex++;
+            $termCheck++;
         }
 
         $this->set(['myTerms'=>$myTerms, 'myTermIndex'=>$myTermIndex]);
@@ -228,7 +299,9 @@ class CourseController extends AppController
             echo "prerequisiteHelper Error: null reference given for myPrereqCourse";
             return -1;
         }
-
+	if (!array_key_exists($myPrereqCourse->id, $nexttermindex)) {
+		$nexttermindex[$myPrereqCourse->id] = $myTermIndex;
+	}
         if($myPrereqCourse->prerequisites == null || $nexttermindex[$myPrereqCourse->id] != $myTermIndex) {
             return $myCourse;
         }
@@ -243,12 +316,50 @@ class CourseController extends AppController
         }
         return $myPrereqCourse;
     }
+    
+    public function updateDependents(&$myCourse, &$myTermIndex, &$nexttermindex) {
+        foreach($myCourse->dependents as $myFutureCourse) {
+	    if (!array_key_exists($myFutureCourse->id, $nexttermindex)) {
+                continue;
+	    }
+            $myFutureCourse = $this->Course->get($myFutureCourse->id, ['contain' => ['Prerequisites', 'Concurrents', 'Dependents']]);
+
+            if(!empty($myFutureCourse->dependents)) {
+                $this->updateDependents($myFutureCourse, $myTermIndex, $nexttermindex);
+            }
+        }
+
+        foreach($myCourse->dependents as $myFutureCourse) {
+	    if (!array_key_exists($myFutureCourse->id, $nexttermindex)) {
+                continue;
+	    }
+            $myFutureCourse = $this->Course->get($myFutureCourse->id, ['contain' => ['Prerequisites', 'Concurrents', 'Dependents']]);
+
+            if(!empty($myFutureCourse->concurrents)) {
+                foreach($myFutureCourse->concurrents as $myCCourse) {
+	            if (!array_key_exists($myCCourse->id, $nexttermindex)) {
+		        $nexttermindex[$myCCourse->id] = $myTermIndex;
+	            }
+                    if($nexttermindex[$myCCourse->id] == $myTermIndex) {
+                        $nexttermindex[$myCCourse->id]++;
+                    }
+                }
+            }
+
+            if($nexttermindex[$myFutureCourse->id] == $myTermIndex) {
+                $nexttermindex[$myFutureCourse->id]++;
+            }
+        }
+    }
 
     public function concurrentHelper(&$myConcurrentCourse = null, &$myTermIndex, &$myCurrentTerm, &$myTermUnits, &$myTermLimit, &$nexttermindex) {
         if($myConcurrentCourse == null) {
             echo "concurrentHelper Error: null reference given for myConcurrentCourse or myCurrentTerm.";
             return -1;
         }
+	if (!array_key_exists($myConcurrentCourse->id, $nexttermindex)) {
+		$nexttermindex[$myConcurrentCourse->id] = $myTermIndex;
+	}
 
         if($nexttermindex[$myConcurrentCourse->id] != $myTermIndex) {
             return $myConcurrentCourse;
@@ -292,6 +403,9 @@ class CourseController extends AppController
         }
 
         foreach($myCourses as $myCourse) {
+	    if (!array_key_exists($myCourse->id, $nexttermindex)) {
+                $nexttermindex[$myCourse->id] = -1;
+	    }
             if($nexttermindex[$myCourse->id] > -1) {
                 return false;
             }

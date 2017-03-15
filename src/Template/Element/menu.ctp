@@ -7,7 +7,7 @@
 
         <ul class="nav navbar-nav">
             <li>
-                <?= $this->Html->link('List Course', ['action' => 'index']) ?>
+                <?= $this->Html->link('List Courses', ['action' => 'index']) ?>
             </li>
         </ul>
             
@@ -17,10 +17,10 @@
             <?= $this->Html->link('Add Course', [ 'action' => 'add']) ?>
           </li>
           <li>
-            <?= $this->Form->postLink(__('Count'), ['action' => 'process']) ?>
+            <?= $this->Form->postLink(__('Estimate'), ['action' => 'userinfo']) ?>
           </li>
           <li>
-            <?= $this->Form->postLink('Clear', ['action' => 'deleteAll'], ['confirm' => 'Delete all courses?']) ?>
+            <?= $this->Form->postLink('Delete all courses', ['action' => 'deleteAll'], ['confirm' => 'Delete all courses?']) ?>
         </li>
         </ul>
     <?php endif; ?>
