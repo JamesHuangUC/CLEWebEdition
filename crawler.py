@@ -29,6 +29,7 @@ class MyIndexHTMLParser(HTMLParser):
 	def __init__(self):
 		self.level = 0
 		self.divs = 0
+		self.lastcname = ''
 		HTMLParser.__init__(self)
 
 	def handle_starttag(self, tag, attrs):
@@ -42,7 +43,7 @@ class MyIndexHTMLParser(HTMLParser):
 		elif (tag == 'li' and self.level == 2):
 			self.level += 1
 		elif (tag == 'a' and self.level == 3 and 'href' in attr):
-			courses[attr['href'].split('/')[2]] = {'url' : 'https://courses.soe.ucsc.edu' + attr['href'], 'Fall' : False, 'Winter' : False, 'Spring': False, 'Summer': False, 'Prerequisites': [], 'Concurrents': []}
+			courses[attr['href'].split('/')[2]] = {'url' : 'https://courses.soe.ucsc.edu' + attr['href'], 'Fall' : 0, 'Winter' : 0, 'Spring': 0, 'Summer': 0, 'Prerequisites': [], 'Concurrents': []}
 			self.level += 1
 
 	def handle_endtag(self, tag):
@@ -61,7 +62,10 @@ class MyIndexHTMLParser(HTMLParser):
 		if (self.level == 4):
 			cname = data.split(': ')
 			if (cname[0].lower() in courses):
-				courses[cname[0].lower()]['name'] = data
+				self.lastcname = cname[0].lower()
+				courses[self.lastcname]['Name'] = data
+			else:
+				courses[self.lastcname]['Name'] += "&" + str(data)
 
 class MyCourseHTMLParser(HTMLParser):
 	def __init__(self, course):
@@ -84,13 +88,13 @@ class MyCourseHTMLParser(HTMLParser):
 			self.level += 1
 		elif (self.inyear and 'href' in attr):
 			if ('Fall' in attr['href']):
-				self.course['Fall'] = True
+				self.course['Fall'] = 1
 			if ('Summer' in attr['href']):
-				self.course['Summer'] = True
+				self.course['Summer'] = 1
 			if ('Winter' in attr['href']):
-				self.course['Winter'] = True
+				self.course['Winter'] = 1
 			if ('Spring' in attr['href']):
-				self.course['Spring'] = True
+				self.course['Spring'] = 1
 
 	def handle_endtag(self, tag):
 		if (tag == 'div' and self.level == 1 and self.divs == 0):
@@ -118,7 +122,7 @@ class MyCourseHTMLParser(HTMLParser):
 				prereqstrdirty = prereqstrdirty.replace(', ', ' | ')
 				for andsection in re.findall('[|][^,]+and', prereqstrdirty):
 					prereqstrdirty = prereqstrdirty.replace(andsection, andsection.replace('and', '|'))
-				prereqstr = fixnames(re.sub('(^| and )([0-9]+[A-Z]?)', '\\1course \\2', prereqstrdirty), self.course['name']).split('.')[0]
+				prereqstr = fixnames(re.sub('(^| and )([0-9]+[A-Z]?)', '\\1course \\2', prereqstrdirty), self.course['Name']).split('.')[0]
 				prereqstrs = re.split(' and ', prereqstr)
 				prereqs = []
 				for prs in prereqstrs:
@@ -138,7 +142,7 @@ class MyCourseHTMLParser(HTMLParser):
 				concurstrdirty = concurstrdirty.replace(', ', ' | ')
 				for andsection in re.findall('[|][^,]+and', concurstrdirty):
 					concurstrdirty = concurstrdirty.replace(andsection, andsection.replace('and', '|'))
-				concurstr = fixnames(re.sub('(^| and )([0-9]+[A-Z]?)', '\\1course \\2', concurstrdirty), self.course['name']).split(' required.')[0]
+				concurstr = fixnames(re.sub('(^| and )([0-9]+[A-Z]?)', '\\1course \\2', concurstrdirty), self.course['Name']).split(' required.')[0]
 				concurstrs = re.split('(, )|( and )', concurstr)
 				concurs = []
 				for cs in concurstrs:
@@ -158,10 +162,25 @@ r = requests.get('https://courses.soe.ucsc.edu')
 parser = MyIndexHTMLParser()
 parser.feed(r.text)
 
-for course in sorted(list(courses.values()), key=lambda c: c['name']):
+coursesbyid = {}
+
+for course in sorted(list(courses.values()), key=lambda c: int(re.search('\d+', c['Name']).group(0))):
 	r = requests.get(course['url'])
 	parser = MyCourseHTMLParser(course)
 	parser.feed(r.text)
 	del course['url']
+	course['Name'] = course['Name'][:50]
 	if (course['Fall'] or course['Winter'] or course['Spring'] or course['Summer']):
 		print json.dumps(course)
+		r = requests.post('http://cle-app.herokuapp.com/course/upload', data=course)
+		print r.text
+		try:
+			coursesbyid[int(r.text)] = course
+		except ValueError:
+			pass
+
+for cid, course in coursesbyid.items():
+	print 'http://cle-app.herokuapp.com/course/linkuploads/' + str(cid) + '   ' + json.dumps(course)
+	course['Prerequisites'] = json.dumps(course['Prerequisites'])
+	course['Concurrents'] = json.dumps(course['Concurrents'])
+	r = requests.post('http://cle-app.herokuapp.com/course/linkuploads/' + str(cid), data=course)

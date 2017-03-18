@@ -39,8 +39,8 @@ class CourseTable extends Table
     $this->belongsToMany('Concurrents', [
         'className' => 'Course',
         'through' => 'course_concurrents',
-        'foreignKey' => 'from_id',
-        'targetForeignKey' => 'to_id'
+	'foreignKey' => 'from_id',
+	'targetForeignKey' => 'to_id',
     ]);
     $this->belongsToMany('Dependents', [
         'className' => 'Course',
@@ -90,6 +90,8 @@ class CourseTable extends Table
         //var_dump($concurs);die();
         foreach ($concurs as $concur) {
             $query = $concurrents->query();
+            $query->insert(['to_id', 'from_id'])->values(['to_id' => $id, 'from_id'=>(int)$concur])->execute();
+            $query = $concurrents->query();
             $query->insert(['from_id', 'to_id'])->values(['from_id' => $id, 'to_id'=>(int)$concur])->execute();
         }
     }
@@ -106,6 +108,13 @@ class CourseTable extends Table
     public function deleteAssociations($id) {
         $concurrents = TableRegistry::get('CourseConcurrents');
         $prerequisites = TableRegistry::get('CoursePrerequisites');
+        if ($id == null) {
+            $queryC = $concurrents->query();
+            $queryC->delete()->execute();
+            $queryP = $prerequisites->query();
+            $queryP->delete()->execute();
+            return true;
+        }
         $queryC = $concurrents->query();
         $queryC->delete()
             ->where(['from_id'=>$id])

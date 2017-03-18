@@ -12,6 +12,40 @@ use Cake\ORM\TableRegistry;
 class CourseController extends AppController
 {
 
+    public function upload()
+    {
+        $course = $this->Course->newEntity();
+        $course->summer = $this->request->getData('Summer');
+        $course->fall = $this->request->getData('Fall');
+        $course->winter = $this->request->getData('Winter');
+        $course->spring = $this->request->getData('Spring');
+        $course->units = $this->request->getData('Units');
+        $course->name = $this->request->getData('Name');
+        $result=$this->Course->save($course);
+        if($result) print_r($result->id);die();
+    }
+
+    public function linkuploads($id)
+    {
+        $this->Course->deleteAssociations($id);
+        $prereqs = [];
+        foreach (json_decode($this->request->getData('Prerequisites')) as $prereq) {
+            $result = $this->Course->find()->where(['Course.name LIKE' => "$prereq:%"])->first();
+            if ($result)
+                array_push($prereqs, $result->id);
+        }
+        $concurs = [];
+        foreach (json_decode($this->request->getData('Concurrents')) as $concur) {
+            $result = $this->Course->find()->where(['Course.name LIKE' => "$concur:%"])->first();
+            if ($result)
+            	array_push($concurs, $result->id);
+        }
+	if (!empty($prereqs))
+            $this->Course->savePrerequisites($id, $prereqs);
+        if (!empty($concurs))
+            $this->Course->saveConcurrents($id, $concurs);
+    }
+
     /**
      * Index method
      *
@@ -141,8 +175,8 @@ class CourseController extends AppController
     public function deleteAll()
     {
         $this->request->allowMethod(['post', 'deleteAll']);
-        
-        if($this->Course->deleteAll(null)) {
+
+        if($this->Course->deleteAll(null) && $this->Course->deleteAssociations(null)) {
             $this->Flash->success(__('All course have been deleted.'));
         } else {
             $this->Flash->error(__('You have no course to delete.'));
@@ -155,261 +189,120 @@ class CourseController extends AppController
         $this->set('coursenames', TableRegistry::get('course')->find('list'));
     }
 
-
     public function process() {
+        $timeout = 32;
+        $minPasses = 2;
         $myTermLimit = intval($this->request->getData('TermLimit'));
         $mySubset = array_map('intval', $this->request->getData('Subset'));
-        $myTermIndex = 0;
-        $termCheck = 0;
-        // $hasSummerCourses = false;
-        // if($this->summerCoursesExist()) {
-        //     $hasSummerCourses = true;
-        // }
-        //$rawCourseList = array_keys($this->Course->find('list')->toArray());
-        $nexttermindex = [];
-        //foreach($rawCourseList as $myCourse) {
-        //    $nexttermindex[$myCourse] = 0;
-        //}
-
-
-        $rawCourseList = $this->Course->find('all')->where(['id IN' => $mySubset])->contain(['Prerequisites', 'Concurrents', 'Dependents']);
-	//var_dump($rawCourseList);die();
-        $myTerms = [];
-
-        foreach($rawCourseList as $myCourse) {
-            if($myCourse->units > $myTermLimit) {
-                echo "Process Term Error: Course given that exceeds term limit.";
-                return -1;
-            }
-            $nexttermindex[$myCourse->id] = 0;
+        $myFall = $this->request->getData('fall') == '1';
+        $myWinter = $this->request->getData('winter') == '1';
+        $mySpring = $this->request->getData('spring') == '1';
+        $mySummer = $this->request->getData('summer') == '1';
+        if (!($myFall || $myWinter || $mySpring || $mySummer)) {
+            $this->Flash->error(__('You must select at least one quarter!'));
+            return $this->redirect(['action' => 'userinfo']);
         }
-
-        while(!$this->hasFullyUsedCourses($rawCourseList, $nexttermindex)) {
-            $myCurrentTerm = [];
-            $myTermUnits = 0;
-
-            if($termCheck > 3) {
-                $termCheck = 0;
-            }
-
-            foreach($rawCourseList as $myCourse) {
-                if($nexttermindex[$myCourse->id] != $myTermIndex) {
+        if (empty($mySubset)) {
+            $this->Flash->error(__('You must select at least one class!'));
+            return $this->redirect(['action' => 'userinfo']);
+        }
+        $myTermIndex = 0;
+        $taken = [];
+        $tobetaken = [];
+        $schedule = [];
+        $curterm = [];
+        $passes = 0;
+        $curtermlimit = $myTermLimit;
+        $maxPasses = $minPasses + count($mySubset);
+        while (!empty($mySubset) && $myTermIndex <= $timeout) {
+            //debug($taken);
+            //debug($myTermIndex);
+            foreach ($mySubset as $index => $courseid) {
+                if (in_array($courseid, $tobetaken) || in_array($courseid, $taken)) {
+                    //debug('inarray');
+                    unset($mySubset[$index]);
                     continue;
                 }
-
-                //Priorities:
-                //1. Check if course has prerequisite. If so and it's not used,
-                //return it and check this course later.
-                if(!empty($myCourse->prerequisites) && !$this->hasFullyUsedCourses($myCourse->prerequisites, $nexttermindex)) {
-                    $myCourse = $this->prerequisiteHelper($myCourse, $myTermIndex, $myCurrentTerm, $myTermUnits, $myTermLimit, $nexttermindex);
-                }
-                //2. Does this course have concurrents? If so, get all of them,
-                //make sure they don't have any prerequisites either, and if
-                //they do not, make sure they can fit in the current term, and
-                //put them in there if they do.
-                if(!empty($myCourse->concurrents) && !$this->hasFullyUsedCourses($myCourse->concurrents, $nexttermindex)) {
-                    $myCourse = $this->concurrentHelper($myCourse, $myTermIndex, $myCurrentTerm, $myTermUnits, $myTermLimit, $nexttermindex);
-                }
-
-                if($nexttermindex[$myCourse->id] <= $myTermIndex) {
-                    if($myCourse->units + $myTermUnits <= $myTermLimit) {
-                        if($myCourse->fall == null && $myCourse->winter == null && $myCourse->spring == null && $myCourse->summer == null) {
-                            $myTermUnits += $myCourse->units;
-                            $nexttermindex[$myCourse->id] = -1;
-                            array_push($myCurrentTerm, $myCourse);
-
-                            if(!empty($myCourse->dependents)) {
-                                $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
+                $course = $this->Course->get($courseid, ['contain' => ['Prerequisites', 'Concurrents.Prerequisites']]);
+                $cost = $course->units;
+                $takeable = true;
+                if ($course->concurrents != null) {
+                    foreach ($course->concurrents as $concur) {
+                        $cost += $concur->units;
+                        if ($concur->prerequisites != null) {
+                            foreach ($concur->prerequisites as $prereq) {
+                                if (!in_array($prereq->id, $taken)) {
+                                    $takeable = false;
+                                    //debug('prereq '.$prereq->id.' for '.$courseid.' not satisfied');
+                                    if (!in_array($prereq->id, $mySubset) && !in_array($prereq->id, $tobetaken)) {
+                                        array_push($mySubset, $prereq->id);
+                                        $passes = 0;
+                                    }
+                                }
                             }
-
-                        } else {
-                            switch ($termCheck) {
-                                case 0:
-                                    if($myCourse->fall == 1) {
-                                        $myTermUnits += $myCourse->units;
-                                        $nexttermindex[$myCourse->id] = -1;
-                                        array_push($myCurrentTerm, $myCourse);
-
-                                        if(!empty($myCourse->dependents)) {
-                                            $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
-                                        }
-                                    } else {
-                                        $nexttermindex[$myCourse->id]++;
-                                    }
-                                    break;
-                                case 1:
-                                    if($myCourse->winter == 1) {
-                                        $myTermUnits += $myCourse->units;
-                                        $nexttermindex[$myCourse->id] = -1;
-                                        array_push($myCurrentTerm, $myCourse);
-
-                                        if(!empty($myCourse->dependents)) {
-                                            $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
-                                        }
-                                    } else {
-                                        $nexttermindex[$myCourse->id]++;
-                                    }
-                                    break;
-                                case 2:
-                                    if($myCourse->spring == 1) {
-                                        $myTermUnits += $myCourse->units;
-                                        $nexttermindex[$myCourse->id] = -1;
-                                        array_push($myCurrentTerm, $myCourse);
-
-                                        if(!empty($myCourse->dependents)) {
-                                            $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
-                                        }
-                                    } else {
-                                        $nexttermindex[$myCourse->id]++;
-                                    }
-                                    break;
-                                case 3:
-                                    if($myCourse->summer == 1) {
-                                        $myTermUnits += $myCourse->units;
-                                        $nexttermindex[$myCourse->id] = -1;
-                                        array_push($myCurrentTerm, $myCourse);
-
-                                        if(!empty($myCourse->dependents)) {
-                                            $this->updateDependents($myCourse, $myTermIndex, $nexttermindex);
-                                        }
-                                    } else {
-                                        $nexttermindex[$myCourse->id]++;
-                                    }
-                                    break;
-                            }
-
                         }
-
-                    } else {
-                        $nexttermindex[$myCourse->id]++;
                     }
                 }
-            }
-            array_push($myTerms, $myCurrentTerm);
-            $myTermIndex++;
-            $termCheck++;
-        }
-
-        $this->set(['myTerms'=>$myTerms, 'myTermIndex'=>$myTermIndex]);
-
-    }
-
-    public function &prerequisiteHelper(&$myPrereqCourse = null, &$myTermIndex, &$myCurrentTerm, &$myTermUnits, &$myTermLimit, &$nexttermindex) {
-        if($myPrereqCourse == null) {
-            echo "prerequisiteHelper Error: null reference given for myPrereqCourse";
-            return -1;
-        }
-	if (!array_key_exists($myPrereqCourse->id, $nexttermindex)) {
-		$nexttermindex[$myPrereqCourse->id] = $myTermIndex;
-	}
-        if($myPrereqCourse->prerequisites == null || $nexttermindex[$myPrereqCourse->id] != $myTermIndex) {
-            return $myCourse;
-        }
-
-        foreach($myPrereqCourse->prerequisites as $myCourse) {
-            if($nexttermindex[$myCourse->id] == $myTermIndex) {
-                if(!empty($myCourse->concurrents) && !$this->hasFullyUsedCourses($myCourse->concurrents, $nexttermindex)) {
-                    return $this->concurrentHelper($myCourse, $myTermIndex, $myCurrentTerm, $myTermUnits, $myTermLimit, $nexttermindex);
+                if ($cost > $myTermLimit) {
+                    $this->Flash->error(__('Course '.$course->name.' requires enrollment in more than '.$myTermLimit.' units!'));
+                    return $this->redirect(['action' => 'userinfo']);
                 }
-                return $myCourse;
-            }
-        }
-        return $myPrereqCourse;
-    }
-    
-    public function updateDependents(&$myCourse, &$myTermIndex, &$nexttermindex) {
-        foreach($myCourse->dependents as $myFutureCourse) {
-	    if (!array_key_exists($myFutureCourse->id, $nexttermindex)) {
-                continue;
-	    }
-            $myFutureCourse = $this->Course->get($myFutureCourse->id, ['contain' => ['Prerequisites', 'Concurrents', 'Dependents']]);
-
-            if(!empty($myFutureCourse->dependents)) {
-                $this->updateDependents($myFutureCourse, $myTermIndex, $nexttermindex);
-            }
-        }
-
-        foreach($myCourse->dependents as $myFutureCourse) {
-	    if (!array_key_exists($myFutureCourse->id, $nexttermindex)) {
-                continue;
-	    }
-            $myFutureCourse = $this->Course->get($myFutureCourse->id, ['contain' => ['Prerequisites', 'Concurrents', 'Dependents']]);
-
-            if(!empty($myFutureCourse->concurrents)) {
-                foreach($myFutureCourse->concurrents as $myCCourse) {
-	            if (!array_key_exists($myCCourse->id, $nexttermindex)) {
-		        $nexttermindex[$myCCourse->id] = $myTermIndex;
-	            }
-                    if($nexttermindex[$myCCourse->id] == $myTermIndex) {
-                        $nexttermindex[$myCCourse->id]++;
+                if ($cost > $curtermlimit) {
+                    $takeable = false;
+                    //debug('not enough units in term');
+                }
+                if ($course->prerequisites != null) {
+                    foreach ($course->prerequisites as $prereq) {
+                        if (!in_array($prereq->id, $taken)) {
+                            $takeable = false;
+                            //debug('prereq '.$prereq->id.' for '.$courseid.' not satisfied');
+                            if (!in_array($prereq->id, $mySubset) && !in_array($prereq->id, $tobetaken)) {
+                                array_push($mySubset, $prereq->id);
+                                $passes = 0;
+                            }
+                        }
                     }
                 }
-            }
-
-            if($nexttermindex[$myFutureCourse->id] == $myTermIndex) {
-                $nexttermindex[$myFutureCourse->id]++;
-            }
-        }
-    }
-
-    public function concurrentHelper(&$myConcurrentCourse = null, &$myTermIndex, &$myCurrentTerm, &$myTermUnits, &$myTermLimit, &$nexttermindex) {
-        if($myConcurrentCourse == null) {
-            echo "concurrentHelper Error: null reference given for myConcurrentCourse or myCurrentTerm.";
-            return -1;
-        }
-	if (!array_key_exists($myConcurrentCourse->id, $nexttermindex)) {
-		$nexttermindex[$myConcurrentCourse->id] = $myTermIndex;
-	}
-
-        if($nexttermindex[$myConcurrentCourse->id] != $myTermIndex) {
-            return $myConcurrentCourse;
-        }
-
-        foreach($myConcurrentCourse->concurrents as $myCourse) {
-            if(!empty($myCourse->prerequisites) && !$this->hasFullyUsedCourses($myCourse->prerequisites, $nexttermindex)) {
-                return $this->prerequisiteHelper($myCourse, $myTermIndex, $myCurrentTerm, $myTermUnits, $myTermLimit, $nexttermindex);
-            }
-        }
-
-        $concurrentUnits = 0;
-        foreach($myConcurrentCourse->concurrents as $myCourse) {
-            $concurrentUnits += $myCourse->units;
-        }
-
-        if($concurrentUnits > $myTermLimit) {
-            echo "Course Controller Error: Impossible concurrent chain given for defined Quarter Limit.";
-            return -1;
-        }
-
-        if($concurrentUnits + $myTermUnits <= $myTermLimit) {
-            foreach($myConcurrentCourse->concurrents as $myCourse) {
-                $myTermUnits += $myCourse->units;
-                $nexttermindex[$myCourse->id] = -1;
-                array_push($myCurrentTerm, $myCourse);
-            }
-        } else {
-            foreach($myConcurrentCourse->concurrents as $myCourse) {
-                $nexttermindex[$myCourse->id]++;
-            }
-            $nexttermindex[$myConcurrentCourse->id]++;
-        }
-        return $myConcurrentCourse;
-    }
-
-    public function hasFullyUsedCourses(&$myCourses = null, &$nexttermindex) {
-        if($myCourses == null) {
-            echo "Course Controller Error: null reference given for myCourse.";
-            return -1;
-        }
-
-        foreach($myCourses as $myCourse) {
-	    if (!array_key_exists($myCourse->id, $nexttermindex)) {
-                $nexttermindex[$myCourse->id] = -1;
-	    }
-            if($nexttermindex[$myCourse->id] > -1) {
-                return false;
+                if (!($course->fall || $course->winter || $course->spring || $course->summer)) {
+                } elseif ($myTermIndex % 4 == 0) {
+                    if (!$course->fall || !$myFall) $takeable = false;
+                } elseif ($myTermIndex % 4 == 1) {
+                    if (!$course->winter || !$myWinter) $takeable = false;
+                } elseif ($myTermIndex % 4 == 2) {
+                    if (!$course->spring || !$mySpring) $takeable = false;
+                } elseif ($myTermIndex % 4 == 3) {
+                    if (!$course->summer || !$mySummer) $takeable = false;
+                }
+                if ($takeable) {
+                    //debug($courseid.' is takeable');
+                    array_push($curterm, $course);
+                    array_push($tobetaken, $course->id);
+                    if ($course->concurrents != null) {
+                        foreach ($course->concurrents as $concur) {
+                            array_push($curterm, $concur);
+                            array_push($tobetaken, $concur->id);
+                        }
+                    }
+                    $curtermlimit -= $cost;
+                    $passes = 0;
+                } else {
+                    $maxPasses = $minPasses + count($mySubset);
+                    $passes++;
+                }
+                if ($passes >= $maxPasses) {
+                    $passes = 0;
+                    $schedule[$myTermIndex] = $curterm;
+                    $curterm = [];
+                    $myTermIndex++;
+                    $curtermlimit = $myTermLimit;
+                    $taken = array_merge($taken, $tobetaken);
+                    $tobetaken = [];
+                }
             }
         }
-        return true;
+        $schedule[$myTermIndex] = $curterm;
+        $myTermIndex++;
+        if ($myTermIndex > $timeout) $this->Flash->error(__('The courseload you have chosen cannot be completed. Either a cycle exists, you have chosen too many courses, or there are too many prerequisites.'));
+        $this->set(['myTerms'=>$schedule, 'myTermIndex'=>$myTermIndex]);
     }
 }
